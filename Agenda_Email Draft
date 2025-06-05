@@ -1,0 +1,148 @@
+/** MAIN entry-point for “Send Agenda” – 2025-05-28 spec */
+function sendAgenda() {
+  const ss  = SpreadsheetApp.getActiveSpreadsheet();
+  const tab = ss.getSheetByName('Agenda Builder');
+  const ui  = SpreadsheetApp.getUi();
+  const tz  = ss.getSpreadsheetTimeZone();
+
+  /* ── 1. Parse the dropdown cell (E1) ─────────────────────────────── */
+  const e1 = tab.getRange('E1').getValue();                       // "MM/dd – TEST RDX003 – 1:00 PM–2:00 PM"
+  if (!e1) { ui.alert('Pick a session in cell E1 first.'); return; }
+
+  const m = e1.match(/^(\d{2}\/\d{2})\s+–\s+(.*?)\s+–\s+(.+)$/);
+  if (!m) { ui.alert('Could not parse E1.'); return; }
+
+  const mmdd   = m[1];              // e.g. 05/28
+  const title  = m[2];              // "TEST RDX003"
+  const sessCode = (title.match(/(RDX|PDX|CDX)\d{3}/i) || [])[0];
+  if (!sessCode) { ui.alert('No RDX/PDX/CDX### code in E1.'); return; }
+
+  /* ── 2. Find the actual calendar event ───────────────────────────── */
+  const CAL_ID = 'c_cff91665badcd301942da4bf691d83dfecba2fad5027a030db9587d8e7bb3bef@group.calendar.google.com';
+  const today  = new Date(), limit = new Date();
+  limit.setDate(today.getDate()+28);
+
+  const ev = CalendarApp.getCalendarById(CAL_ID)
+            .getEvents(today, limit)
+            .find(e => e.getTitle().includes(sessCode));
+
+  if (!ev) { ui.alert('Could not locate that event on the calendar.'); return; }
+
+  const evtStart = ev.getStartTime(), evtEnd = ev.getEndTime();
+  const evtDate  = Utilities.formatDate(evtStart, tz, 'yyyy.MM.dd');
+  const locStr   = ev.getLocation() || '';
+  const isSJRS   = /Steve Jobs/i.test(locStr);
+  const studio   = isSJRS ? 'SJRS' : 'BKRS';
+  const mixer    = isSJRS ? 'Philip von Düring' : 'Vince Caro';
+  const recStart = Utilities.formatDate(evtStart, tz, 'h:mm a');
+  const recEnd   = Utilities.formatDate(evtEnd,   tz, 'h:mm a');
+
+  /* ── 3. Build TO: list (human guests + test-rdx) ─────────────────── */
+  const toSet = new Set(
+    ev.getGuestList(true)
+      .map(g => g.getEmail())
+      .filter(e => !/@resource\.calendar\.google\.com$/.test(e))
+  );
+  toSet.add('Test-rdx@pixar.com');
+  const toList = Array.from(toSet).join(',');
+
+  /* ── 4. Schedule table (cols G-J) – build & sort timing[] ──────────── */
+  const schedVals = tab.getRange(SCHED_START_ROW, 7,                 // G
+                                tab.getLastRow() - SCHED_START_ROW + 1,
+                                4)                                   // G-J block
+                      .getValues()
+                      .filter(r => r[0] && r[3]);   // actor & time-range present
+
+  if (!schedVals.length) {
+    ui.alert('Column J must contain start-end times before sending.'); 
+    return;
+  }
+
+  const todayStamp = Utilities.formatDate(new Date(), tz, 'MM/dd/yyyy ');
+  const toDate = tStr => new Date(todayStamp + tStr);   // helper → Date in local TZ
+
+  const timing = schedVals.map(([actor, , , range]) => {
+    const m = range.match(/(.+)-(.+)/);                 // split "4:45 PM-5:00 PM"
+    const startStr = m ? m[1].trim() : '';
+    const endStr   = m ? m[2].trim() : '';
+    return {
+      actor,
+      startStr,
+      endStr,
+      startDate: startStr ? toDate(startStr) : null     // for sorting only
+    };
+  })
+  .sort((a, b) => (a.startDate || 0) - (b.startDate || 0));  // chronological
+  /* ──────────────────────────────────────────────────────────────────── */
+
+
+  /* ── 5. Agenda rows (B-E) to collect per-actor details ───────────── */
+  const agendaRows = tab.getRange(5,2, tab.getLastRow()-4, 4).getValues()
+                        .filter(r => r[0]);      // seq present
+
+  const actorMap = new Map(); // actor → {char, total, items[]}
+  const allChars = [];        // for subject line
+  agendaRows.forEach(([seq,char,lines,actor])=>{
+    if (!actor) return;
+    if (!actorMap.has(actor)) actorMap.set(actor,{char:char.toUpperCase(),total:0,items:[]});
+    const o = actorMap.get(actor);
+    o.total += +lines;
+    o.items.push({seq,lines:+lines});
+    if (!allChars.includes(char)) allChars.push(char);
+  });
+
+  /* ── 6. Prompts for Edit Assist(s) + script link ─────────────────── */
+  const ea = ui.prompt('Edit Assist(s)','Comma-separated names:',ui.ButtonSet.OK_CANCEL);
+  if (ea.getSelectedButton()!==ui.Button.OK) return;
+  const editAssists = ea.getResponseText().trim() || '—';
+
+  const link = ui.prompt('Script link','Paste DRIVE/BOX URL:',ui.ButtonSet.OK_CANCEL);
+  if (link.getSelectedButton()!==ui.Button.OK) return;
+  const scriptURL = link.getResponseText().trim()||'#';
+
+  /* ── 7. Compose HTML body ────────────────────────────────────────── */
+  const br = '<br>', b = s=>'\<b>'+s+'</b>', u=s=>'<u>'+s+'</u>';
+
+  let html = '';
+  html += b(u('Test RDX'))+br;
+  html += b('Recording Session / Tape Name: '+sessCode)+br;
+  html += 'Date: '+Utilities.formatDate(evtStart,tz,'MM/dd/yyyy')+br;
+  html += 'Recording: '+recStart+' - '+recEnd+br;
+  html += 'Location(s): '+studio+br+br;
+  html += 'Directors: Director Name'+br;
+  html += 'Sound Mixer(s): '+mixer+br;
+  html += 'Edit Assist(s): '+editAssists+br;
+  html += 'Script Supe: Rogelio Martinez'+br+br;
+  html += b('SCHEDULE') + br + br;
+
+  timing.forEach(t => {
+    html += u(t.startStr + ' - ' + t.endStr + ' (' + studio + ')') + br;
+
+    const d = actorMap.get(t.actor) || { char:'', total:0, items:[] };
+    const lineWord = (d.total === 1 ? 'line' : 'lines');
+    html += b(t.actor + ' as ' + d.char + ' - ' + d.total + ' ' + lineWord) + br;
+
+    d.items.forEach(it => {
+      const w = (it.lines === 1 ? 'line' : 'lines');
+      html += it.seq + ' - ' + it.lines + ' ' + w + br;
+    });
+    html += br;
+  });
+
+  html += '<a href="'+scriptURL+'">SCRIPT(S)</a>'+br;
+
+  /* ── 8. Subject line – TEST | yyyy.MM.dd Session # RDX003: chars ──── */
+  const subj = 'Test | '+evtDate+
+               ' '+sessCode+': '+
+               allChars.join(', ');
+
+  /* ── 9. Create Gmail draft ───────────────────────────────────────── */
+  GmailApp.createDraft(
+    toList || Session.getActiveUser().getEmail(),
+    subj,
+    '',                               // plain-text body
+    { htmlBody: html }
+  );
+
+  ui.alert('Draft created! Check Gmail → Drafts.');
+}
