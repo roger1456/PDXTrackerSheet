@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top">
+    <link rel="stylesheet" href="https://ssl.gstatic.com/docs/script/css/add-ons1.css">
+    <style>
+      body { padding: 10px; font-family: Arial, sans-serif; }
+      .form-row { margin-bottom: 12px; }
+      label { font-weight: bold; display: block; margin-bottom: 4px; font-size: 0.9em;}
+      input[type="text"], select, textarea {
+        width: 100%;
+        padding: 8px;
+        box-sizing: border-box;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+      }
+      textarea { height: 70px; }
+      .button-bar { margin-top: 20px; text-align: right; }
+      button {
+        margin-left: 8px;
+        padding: 8px 15px;
+        border-radius: 4px;
+        border: none;
+        cursor: pointer;
+      }
+      button.action { background-color: #4CAF50; color: white; }
+      button.cancel { background-color: #f44336; color: white; } /* More distinct cancel */
+      #itemEntry {
+        border: 1px solid #ddd;
+        padding: 15px;
+        margin-bottom:20px;
+        border-radius: 4px;
+        background-color: #f9f9f9;
+      }
+      h4 { margin-top:0; color: #333; }
+      .radio-group label { font-weight:normal; display:inline-block; margin-right:15px; font-size:0.9em;}
+      .radio-group input[type="radio"] { margin-right: 5px; vertical-align: middle;}
+      #status { margin-top:15px; font-weight:bold; padding: 8px; border-radius:3px; }
+      .status-success { color: green; background-color: #e8f5e9; }
+      .status-error { color: red; background-color: #ffebee; }
+    </style>
+  </head>
+  <body>
+    <div id="mainDialog">
+      <div class="form-row">
+        <label for="eventSelect">Select Event:</label>
+        <select id="eventSelect" name="eventSelect">
+          <!-- Options will be populated by script -->
+        </select>
+      </div>
+
+      <div id="itemEntry">
+        <h4>Agenda Item Details</h4>
+        <div class="form-row">
+          <label for="sequence">Sequence/Number (e.g., 1, 2a):</label>
+          <input type="text" id="sequence" name="sequence">
+        </div>
+        <div class="form-row">
+          <label for="topic">Topic/Action (Required):</label>
+          <input type="text" id="topic" name="topic" required>
+        </div>
+        <div class="form-row">
+          <label for="details">Details/Lines:</label>
+          <textarea id="details" name="details"></textarea>
+        </div>
+        <div class="form-row">
+          <label for="actor">Actor/Owner:</label>
+          <input type="text" id="actor" name="actor">
+        </div>
+      </div>
+
+      <div class="form-row radio-group">
+        <label style="display:block; margin-bottom: 5px;">Action Type:</label>
+        <input type="radio" id="actionAdd" name="actionType" value="add" checked>
+        <label for="actionAdd">Add item(s) to selected event's agenda</label><br>
+        <input type="radio" id="actionReplace" name="actionType" value="replace">
+        <label for="actionReplace">Replace selected event's entire agenda with item(s)</label>
+      </div>
+
+      <div class="button-bar">
+        <button onclick="google.script.host.close()" class="cancel">Cancel</button>
+        <button class="action" onclick="submitForm()">Submit</button>
+      </div>
+
+      <div id="status"></div>
+    </div>
+
+    <script>
+      function submitForm() {
+        var statusDiv = document.getElementById('status');
+        statusDiv.textContent = 'Processing...';
+        statusDiv.className = ''; // Reset classes
+
+        var form = {};
+        form.eventSelect = document.getElementById('eventSelect').value;
+        form.actionType = document.querySelector('input[name="actionType"]:checked').value;
+
+        form.sequence = document.getElementById('sequence').value;
+        form.topic = document.getElementById('topic').value;
+        form.details = document.getElementById('details').value;
+        form.actor = document.getElementById('actor').value;
+
+        if (!form.topic && (form.actionType === 'add' || (form.actionType === 'replace' && (form.sequence || form.details || form.actor)))) {
+            statusDiv.textContent = 'Topic/Action is required to add or replace with a new item.';
+            statusDiv.className = 'status-error';
+            return;
+        }
+        if (!form.eventSelect || form.eventSelect === 'No events available' || form.eventSelect === 'Error loading events') {
+            statusDiv.textContent = 'Please select a valid event.';
+            statusDiv.className = 'status-error';
+            return;
+        }
+
+        google.script.run
+          .withSuccessHandler(function(response) {
+            if (response.success) {
+              statusDiv.textContent = response.message;
+              statusDiv.className = 'status-success';
+              setTimeout(function() { google.script.host.close(); }, 2500);
+            } else {
+              statusDiv.textContent = 'Error: ' + (response.message || "Unknown error");
+              statusDiv.className = 'status-error';
+            }
+          })
+          .withFailureHandler(function(error) {
+            statusDiv.textContent = 'Script error: ' + error.message;
+            statusDiv.className = 'status-error';
+          })
+          .processManageAgendaForm(form);
+      }
+
+      window.onload = function() {
+        var select = document.getElementById('eventSelect');
+        var statusDiv = document.getElementById('status');
+        select.disabled = true; // Disable until populated
+        var loadingOption = document.createElement('option');
+        loadingOption.textContent = 'Loading events...';
+        select.appendChild(loadingOption);
+
+        google.script.run
+          .withSuccessHandler(function(events) {
+            select.removeChild(loadingOption);
+            if (events && events.length > 0 && !events[0].startsWith("Error") && events[0] !== "No events found in the next 4 weeks") {
+              events.forEach(function(event) {
+                var option = document.createElement('option');
+                option.value = event;
+                option.textContent = event;
+                select.appendChild(option);
+              });
+              select.disabled = false;
+            } else {
+              var option = document.createElement('option');
+              option.textContent = events[0] || 'No events available'; // Display message from server
+              select.appendChild(option);
+              // Keep disabled if no valid events
+            }
+          })
+          .withFailureHandler(function(err) {
+             select.removeChild(loadingOption);
+             var option = document.createElement('option');
+             option.textContent = 'Error loading events';
+             select.appendChild(option);
+             statusDiv.textContent = 'Failed to load events: ' + err.message;
+             statusDiv.className = 'status-error';
+             console.error("Error loading events: " + err.message);
+          })
+          .getEventsForDialog();
+      };
+    </script>
+  </body>
+</html>
